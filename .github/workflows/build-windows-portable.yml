@@ -1,0 +1,75 @@
+name: Build Windows x64 Portable
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-windows-portable.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hghub-windows-portable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-portable:
+    name: Windows x64 portable EXE
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Set up Rust (MSVC x64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build portable executable (no installer)
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --no-bundle
+
+      - name: Package portable EXE and SHA256
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $exe = 'src-tauri/target/x86_64-pc-windows-msvc/release/huangguo-client.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Built executable not found: $exe" }
+          New-Item -ItemType Directory -Force -Path artifacts, portable | Out-Null
+          Copy-Item -LiteralPath $exe -Destination 'portable/HGhub.exe'
+          $zip = "artifacts/HGhub_${version}_windows_x64_portable.zip"
+          Compress-Archive -LiteralPath 'portable/HGhub.exe' -DestinationPath $zip -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $zip)" | Set-Content -Encoding utf8 'artifacts/SHA256SUMS.txt'
+          Get-ChildItem artifacts | Select-Object Name, Length
+
+      - name: Upload Windows x64 portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-windows-x64-portable
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
